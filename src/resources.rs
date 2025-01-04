@@ -1,4 +1,8 @@
 use bevy::prelude::*;
+use burn::{
+    backend::Wgpu,
+    tensor::{Tensor, TensorData},
+};
 use std::{
     marker::PhantomData,
     time::{Duration, Instant},
@@ -100,4 +104,46 @@ impl FoodCenter {
 #[derive(Resource)]
 pub struct MenuData {
     pub button_entity: Entity,
+}
+
+#[derive(Resource, Default)]
+pub struct PlayerScore {
+    history: [[[f32; 28]; 28]; 2],
+    food_count: u8,
+}
+impl PlayerScore {
+    pub fn add(&mut self, pos: Position) {
+        let i = pos.x() as usize / 28;
+        let x = pos.x() as usize % 28;
+        let y = pos.y() as usize;
+
+        self.history[i][x][y] += 1.;
+    }
+    pub fn increment(&mut self) {
+        self.food_count += 1;
+    }
+    pub fn get_score(&self) -> u8 {
+        type MyBackend = Wgpu<f32, i32>;
+
+        let device = burn::backend::wgpu::WgpuDevice::default();
+        let artifact_dir = "data";
+
+        let mut score = self.food_count;
+
+        for i in 0..2 {
+            let data = self.history[i]
+                .iter()
+                .flat_map(|row| row.iter())
+                .copied()
+                .collect();
+            let tensor_data = TensorData::new(data, [1, 28, 28]);
+            score += crate::inference::infer::<MyBackend>(
+                artifact_dir,
+                device.clone(),
+                Tensor::from_data(tensor_data.clone(), &device),
+            );
+        }
+
+        score
+    }
 }

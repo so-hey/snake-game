@@ -1,11 +1,12 @@
 use crate::components::{Direction, Enemy, FlashMask, Food, Player, Position, Size, Snake};
 use crate::constants::{
-    ARENA_HEIGHT, ARENA_WIDTH, BODY_SIZE, DIRECTION_WEIGHT, ENEMY_BODY_COLOR, ENEMY_HEAD_COLOR,
-    FOOD_COLOR, FOOD_SIZE, HEAD_SIZE, HOVERED_BUTTON, INITIAL_HEIGHT, INITIAL_WIDTH, NORMAL_BUTTON,
-    PLAYER_BODY_COLOR, PLAYER_HEAD_COLOR, PRESSED_BUTTON, SNAKE_SPEED, WORLD_COLOR,
+    in_arena, in_enemy_arena, ARENA_HEIGHT, ARENA_WIDTH, BODY_SIZE, DIRECTION_WEIGHT,
+    ENEMY_BODY_COLOR, ENEMY_HEAD_COLOR, FOOD_COLOR, FOOD_SIZE, HEAD_SIZE, HOVERED_BUTTON,
+    INITIAL_HEIGHT, INITIAL_WIDTH, NORMAL_BUTTON, PLAYER_BODY_COLOR, PLAYER_HEAD_COLOR,
+    PRESSED_BUTTON, SNAKE_SPEED, WORLD_COLOR,
 };
 use crate::events::{EnemyDieEvent, GrowthEvent};
-use crate::resources::{CounterSetting, FoodCenter, IntervalSetting, MenuData};
+use crate::resources::{CounterSetting, FoodCenter, IntervalSetting, MenuData, PlayerScore};
 use bevy::prelude::*;
 use rand::{
     distributions::{Distribution, WeightedIndex},
@@ -13,23 +14,13 @@ use rand::{
 };
 use std::time::{Duration, Instant};
 
-fn in_arena(x: i32, y: i32) -> bool {
-    0 <= x && x < ARENA_WIDTH as i32 && 0 <= y && y < ARENA_HEIGHT as i32
-}
-
-fn in_enemy_arena(x: i32, y: i32) -> bool {
-    -(ARENA_WIDTH as i32 / 2) <= x
-        && x < 3 * ARENA_WIDTH as i32 / 2
-        && -(ARENA_HEIGHT as i32 / 2) <= y
-        && y < 3 * ARENA_HEIGHT as i32 / 2
-}
-
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Hash, States)]
 enum GameState {
     #[default]
     Menu,
     Playing,
     GameOver,
+    ShowScore,
 }
 
 pub fn play() {
@@ -66,6 +57,7 @@ pub fn play() {
         )
         .add_systems(Update, flash_mask.run_if(in_state(GameState::GameOver)))
         .add_systems(OnExit(GameState::GameOver), game_over)
+        .add_systems(Update, show_score.run_if(in_state(GameState::ShowScore)))
         .add_systems(PostUpdate, (position_translation, size_scaling))
         .insert_resource(ClearColor(WORLD_COLOR))
         .insert_resource(IntervalSetting::<Player>::default())
@@ -75,6 +67,7 @@ pub fn play() {
         .insert_resource(CounterSetting::<Enemy>::default())
         .insert_resource(CounterSetting::<FlashMask>::default())
         .insert_resource(FoodCenter::default())
+        .insert_resource(PlayerScore::default())
         .add_event::<GrowthEvent>()
         .add_event::<EnemyDieEvent>()
         .run();
@@ -154,7 +147,7 @@ fn size_scaling(window: Query<&Window>, mut q: Query<(&Size, &mut Transform)>) {
     for (sprite_size, mut transform) in q.iter_mut() {
         transform.scale = Vec3::new(
             sprite_size.w() / ARENA_WIDTH as f32 * window_size,
-            sprite_size.h() / ARENA_HEIGHT as f32 * window_size,
+            sprite_size.h() / ARENA_HEIGHT as f32 * window_size - 6.,
             1.0,
         );
     }
@@ -169,7 +162,7 @@ fn position_translation(window: Query<&Window>, mut q: Query<(&Position, &mut Tr
     for (pos, mut transform) in q.iter_mut() {
         transform.translation = Vec3::new(
             convert(pos.x() as f32, window.width(), ARENA_WIDTH as f32),
-            convert(pos.y() as f32, window.height(), ARENA_HEIGHT as f32),
+            convert(pos.y() as f32, window.height(), ARENA_HEIGHT as f32) - 3.,
             0.0,
         );
     }
@@ -241,8 +234,9 @@ fn spawn_enemy(
         px = rng.gen_range(-1..3);
         py = rng.gen_range(-1..3);
     }
-    let x = px * 28 + rng.gen_range(0..28);
-    let y = 80.min(py * 28 + rng.gen_range(0..28)); // 体が下にあるため
+    let x = px * (ARENA_WIDTH as i32 / 2) + rng.gen_range(0..ARENA_WIDTH) as i32;
+    let y = (ARENA_HEIGHT as i32 - 4)
+        .min(py * (ARENA_HEIGHT as i32 / 2) + rng.gen_range(0..ARENA_HEIGHT) as i32); // 体が下に続くため
 
     let mut snake = Snake::default();
     snake.add(
@@ -365,6 +359,7 @@ fn snake_movement(
     mut growth_writer: EventWriter<GrowthEvent>,
     mut interval: ResMut<IntervalSetting<Player>>,
     mut next_state: ResMut<NextState<GameState>>,
+    mut history: ResMut<PlayerScore>,
 ) {
     let now = Instant::now();
     if !interval.check(now, Duration::from_millis(600 / SNAKE_SPEED)) {
@@ -405,6 +400,7 @@ fn snake_movement(
                 next_state.set(GameState::GameOver);
                 break;
             }
+            history.as_mut().add(head_pos);
         } else {
             if !in_enemy_arena(head_pos.x(), head_pos.y()) {
                 enemy_die_writer.send(EnemyDieEvent { enemy: snake_ent });
@@ -470,6 +466,7 @@ fn snake_growth(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     player: Query<&Player>,
+    mut player_score: ResMut<PlayerScore>,
     mut snakes: Query<&mut Snake>,
     mut growth_reader: EventReader<GrowthEvent>,
     mut center: ResMut<FoodCenter>,
@@ -487,6 +484,9 @@ fn snake_growth(
             Size::square(BODY_SIZE),
             player.get(event.snake).is_ok(),
         ));
+        if player.get(event.snake).is_ok() {
+            player_score.increment();
+        }
     }
 }
 
@@ -530,7 +530,7 @@ fn flash_mask(
         return;
     }
 
-    next_state.set(GameState::Menu);
+    next_state.set(GameState::ShowScore);
 }
 
 fn game_over(
@@ -559,4 +559,10 @@ fn game_over(
     flash_interval.reset();
     enemy_counter.reset();
     flash_counter.reset();
+}
+
+fn show_score(player_score: Res<PlayerScore>, mut next_state: ResMut<NextState<GameState>>) {
+    let score = player_score.get_score();
+    println!("{}", score);
+    next_state.set(GameState::Menu);
 }
